@@ -1,9 +1,6 @@
-# ✅ FINAL VERSION (Cloud-Ready)
-
 import os
 import json
 import re
-import io
 import PyPDF2
 import streamlit as st
 import spacy
@@ -11,22 +8,28 @@ from openai import OpenAI
 import base64
 import pandas as pd
 
+# Setup Groq-compatible OpenAI client
 client = OpenAI(
-    api_key="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",
+    api_key="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",
     base_url="https://api.groq.com/openai/v1"
 )
 
 nlp = spacy.load("en_core_web_sm")
 
-st.set_page_config(layout="wide")
-st.title("📄 AI Investor Memo Generator (Groq + Web Simulation)")
-
-for key in ["chat_history", "memo_generated", "final_memo", "pdf_bytes", "page_texts", "combined_page_summaries", "condensed_summary", "simulated_web_data", "entities"]:
-    if key not in st.session_state:
-        st.session_state[key] = None
-
+# Initialize session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "memo_generated" not in st.session_state:
+    st.session_state.memo_generated = False
+if "final_memo" not in st.session_state:
+    st.session_state.final_memo = ""
+if "uploaded_file_path" not in st.session_state:
+    st.session_state.uploaded_file_path = ""
 if "user_company_name" not in st.session_state:
     st.session_state.user_company_name = None
+
+st.set_page_config(layout="wide")
+st.title("📄 AI Investor Memo Generator (Groq + Web Simulation)")
 
 if not st.session_state.user_company_name:
     with st.form("company_form"):
@@ -48,7 +51,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload a Pitch Deck (PDF)", type="pdf")
 
 def chat_with_groq(user_input):
-    messages = (st.session_state.chat_history or []) + [{"role": "user", "content": user_input}]
+    messages = st.session_state.chat_history + [{"role": "user", "content": user_input}]
     try:
         response = client.chat.completions.create(
             model="llama3-70b-8192",
@@ -56,10 +59,16 @@ def chat_with_groq(user_input):
             temperature=0.5
         )
         reply = response.choices[0].message.content.strip()
-        st.session_state.chat_history = messages + [{"role": "assistant", "content": reply}]
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
         return reply
     except Exception as e:
         return f"[Chatbot Error: {str(e)}]"
+
+def extract_text_by_page(file_path):
+    with open(file_path, "rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        return [page.extract_text() for page in reader.pages if page.extract_text()]
 
 def summarize_page_content(page_text, page_number):
     prompt = f"Summarize this pitch deck page {page_number} for investment analysis:\n\n{page_text}"
@@ -75,9 +84,12 @@ def summarize_page_content(page_text, page_number):
 
 def summarize_entire_deck(summary_text, company, founders):
     prompt = f"""
-You are helping compress a pitch deck for a VC analyst...
-Company name: {company}
-Founders: {', '.join(founders)}
+You are helping compress a pitch deck for a VC analyst. Retain important context from the top including:
+- Company name: {company}
+- Founders: {', '.join(founders)}
+- Any funding, product, or traction details if mentioned.
+
+Now, summarize the pitch content concisely (within 1500 words) preserving critical information for investor analysis.
 
 --- Full Pitch Text ---
 {summary_text}
@@ -100,9 +112,24 @@ def analyze_entities(text):
     }
 
 def groq_simulate_web_research(company, founders):
+    people_str = ", ".join(founders)
     prompt = f"""
-Simulate online research for a startup: {company}, by {', '.join(founders)}
-(Website, product, traction, news, etc.) in JSON.
+You are an advanced AI with access to the internet and VC databases.
+
+Do an exhaustive online research for a startup called **{company}**, founded by {people_str}.
+Collect and summarize publicly available information such as:
+- Company website and domain
+- Founding year, location
+- Products, industry, customer segments
+- Revenue, funding rounds, investors
+- PR mentions, recent news
+- LinkedIn/AngelList/Crunchbase presence
+- Signals of traction or credibility
+
+Provide the research output in JSON format under keys like:
+- name, website, domain, location, founded_year, product_overview, news, social_links, funding_info, investor_names, media_mentions, awards, team_highlights
+
+If anything is missing, say "unknown".
 """
     try:
         response = client.chat.completions.create(
@@ -116,11 +143,33 @@ Simulate online research for a startup: {company}, by {', '.join(founders)}
 
 def generate_final_memo(condensed_summary, simulated_web_data):
     prompt = f"""
-Write a detailed VC memo using:
---- Pitch ---
+Act as a VC investment analyst.
+Based on the pitch deck content and enriched web research below, write an exhaustive, structured investor memo with subpoints.
+
+--- PITCH DECK (condensed summary) ---
 {condensed_summary}
---- Web Research ---
+
+--- WEB RESEARCH (company, founders, product news, site metadata) ---
 {simulated_web_data}
+
+Your output should include:
+1. Executive Summary
+2. Company Overview
+3. Team & Founders
+4. Technology Breakdown
+5. Product & IP
+6. Market
+7. Traction
+8. Financial Summary
+9. Unit Economics
+10. Competitive Landscape
+11. Website & Public Presence
+12. Strategic Concerns & Risks
+13. Roadmap & Execution Readiness
+14. Exit Potential (IPO, acquisition)
+15. Final Recommendation
+
+Include any important external URLs referenced in the memo.
 """
     try:
         response = client.chat.completions.create(
@@ -132,12 +181,38 @@ Write a detailed VC memo using:
     except Exception as e:
         return f"[Groq final memo failed: {str(e)}]"
 
-def show_pdf():
-    pdf_base64 = base64.b64encode(st.session_state.pdf_bytes).decode("utf-8")
-    st.markdown(f'<iframe src="data:application/pdf;base64,{pdf_base64}" width="100%" height="700px"></iframe>', unsafe_allow_html=True)
+def show_pdf(file_path):
+    with open(file_path, "rb") as f:
+        base64_pdf = base64.b64encode(f.read()).decode("utf-8")
+    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px" type="application/pdf"></iframe>'
+    st.markdown(pdf_display, unsafe_allow_html=True)
 
 def build_summary_table():
-    prompt = f"Extract detailed summary as structured JSON from:\n{st.session_state.final_memo}"
+    prompt = f"""
+Act as a VC analyst.
+Extract a detailed, in-depth structured summary from the following investor memo.
+Provide extensive insights under each section for granular analysis.
+
+Output as a JSON array of objects with keys:
+- Section
+- Subsections (optional): Bullet-point highlights under the section
+- Details: Clear, specific takeaways or descriptions
+- Links (if any): A list of relevant external URLs mentioned in that section
+
+Format:
+[
+  {{
+    "Section": "Market Overview",
+    "Subsections": ["Target Segments", "Customer Pain Points"],
+    "Details": "• TAM is estimated at $8B...\\n• Primarily focused on Gen Z urban consumers...",
+    "Links": ["https://example.com/report"]
+  }},
+  ...
+]
+
+Investor Memo:
+{st.session_state.final_memo}
+"""
     try:
         response = client.chat.completions.create(
             model="llama3-70b-8192",
@@ -145,38 +220,60 @@ def build_summary_table():
             temperature=0.4
         )
         content = response.choices[0].message.content.strip()
-        json_block = re.search(r'\[.*?\]', content, re.DOTALL)
-        return pd.DataFrame(json.loads(json_block.group(0)))
+        match = re.search(r'\[\s*{.*?}\s*]', content, re.DOTALL)
+        if not match:
+            raise ValueError("No valid JSON array found in response.")
+        json_data = json.loads(match.group(0))
+        return pd.DataFrame(json_data)
     except Exception as e:
         return pd.DataFrame([{"Section": "Error", "Details": str(e)}])
 
+st.markdown("""
+    <style>
+    .css-1xarl3l, .css-1r6slb0, .css-1fcbfmj, .stDataFrame td {
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 if uploaded_file and not st.session_state.memo_generated:
-    st.session_state.pdf_bytes = uploaded_file.read()
-    reader = PyPDF2.PdfReader(io.BytesIO(st.session_state.pdf_bytes))
-    st.session_state.page_texts = [page.extract_text() for page in reader.pages if page.extract_text()]
+    temp_path = f"/tmp/{uploaded_file.name}"
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.read())
+    st.session_state.uploaded_file_path = temp_path
 
     status_box = st.empty()
-    summaries = []
-    for i, page in enumerate(st.session_state.page_texts):
-        status_box.info(f"🧠 Summarizing page {i+1}...")
-        summaries.append(f"[Page {i+1}]\n{summarize_page_content(page[:3000], i+1)}")
-    st.session_state.combined_page_summaries = summaries
 
-    all_text = "\n".join(st.session_state.page_texts)
-    st.session_state.entities = analyze_entities(all_text)
+    status_box.info("📄 Extracting and summarizing PDF pages...")
+    page_texts = extract_text_by_page(temp_path)
+    combined_page_summaries = []
+
+    for i, page in enumerate(page_texts):
+        status_box.info(f"🧠 Summarizing page {i+1}...")
+        summary = summarize_page_content(page[:3000], i + 1)
+        combined_page_summaries.append(f"[Page {i+1}]\n{summary}")
+
+    full_summary_text = "\n\n".join(combined_page_summaries)
+
+    status_box.info("🔍 Extracting entities...")
+    all_text = "\n".join(page_texts)
+    entities = analyze_entities(all_text)
     company = st.session_state.user_company_name
-    founders = st.session_state.entities["people"][:3]
+    founders = entities["people"][:3]
 
     status_box.info("🧠 Condensing pitch content...")
-    st.session_state.condensed_summary = summarize_entire_deck("\n\n".join(summaries), company, founders)
+    condensed_summary = summarize_entire_deck(full_summary_text, company, founders)
 
     status_box.info("🌐 Simulating web research...")
-    st.session_state.simulated_web_data = groq_simulate_web_research(company, founders)
+    simulated_web_data = groq_simulate_web_research(company, founders)
 
     status_box.info("📊 Generating investor memo...")
-    st.session_state.final_memo = generate_final_memo(st.session_state.condensed_summary, st.session_state.simulated_web_data)
+    final_memo = generate_final_memo(condensed_summary, simulated_web_data)
+
     st.session_state.memo_generated = True
-    status_box.success("✅ Memo generated!")
+    st.session_state.final_memo = final_memo
+    status_box.empty()
 
 if st.session_state.memo_generated:
     tab1, tab2, tab3, tab4 = st.tabs(["📘 Memo", "📄 PDF Preview", "💬 Chat", "📋 Summary Table"])
@@ -188,7 +285,7 @@ if st.session_state.memo_generated:
 
     with tab2:
         st.subheader("📄 Original Pitch Deck Preview")
-        show_pdf()
+        show_pdf(st.session_state.uploaded_file_path)
 
     with tab3:
         st.subheader("💬 VC Chat Assistant")
