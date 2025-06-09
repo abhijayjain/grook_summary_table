@@ -1,6 +1,8 @@
 streamlit
 PyPDF2
-spacy
-pandas
+requests
+beautifulsoup4
+ollama
 openai
-https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
+spacy
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0.tar.gz
